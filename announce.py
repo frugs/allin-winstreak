@@ -72,7 +72,7 @@ def main():
 
     if os.path.exists(WIN_STREAKS_CACHE_FILE):
         with open(WIN_STREAKS_CACHE_FILE, "rb") as file:
-            win_streaks_cache = pickle.load(file)
+            win_streaks_cache = dict(pickle.load(file))
 
         for member, streak in win_streaks:
             if streak > win_streaks_cache.get(member, 0):
