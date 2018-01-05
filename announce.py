@@ -27,7 +27,7 @@ WIN_STREAK_MESSAGES = {
     8: "RAMPAGE. <@{}> is on an 8 game win streak!",
     9: "<@{}> is completely dominating with a 9 win streak!",
     10: "U N S T O P P A B L E. <@{}> is on a 10 win streak!",
-    15: "🎉 🎉 🎉 🎉 Congratulations! <@{}> has gone 15 games without losing a single one! 🎉 🎉 🎉 🎉"
+    15: "🎉 🎉 🎉 🎉 Congratulations!  🎉 🎉 🎉 🎉\n<@{}> has gone 15 games without losing a single one!"
 }
 SECONDS_IN_5_DAYS = 432000
 
