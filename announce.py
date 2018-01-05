@@ -5,18 +5,23 @@ import itertools
 import json
 import os
 import pickle
+import requests
 import urllib.request
 from typing import Tuple
 
 import pyrebase
+import time
 
+DISCORD_BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+GUILD_ID = os.getenv("GUILD_ID", "")
 TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID", "")
 ANNOUNCEMENT_CHANNEL_ID = os.getenv("ANNOUNCEMENT_CHANNEL_ID", "219804933916983296")
+ALLIN_MEMBER_ROLE_ID = os.getenv("ALLIN_MEMBER_ROLE_ID", "")
 ANNOUNCE_URL = os.getenv("ANNOUNCE_URL", "http://localhost:40862")
 FIREBASE_CONFIG = os.getenv("FIREBASE_CONFIG", "")
 WIN_STREAKS_CACHE_FILE = os.getenv("WIN_STREAKS_CACHE_FILE", "win_streaks.cache")
+
 WIN_STREAK_MESSAGES = {
-    3: "<@{}> is on a 3 game win streak!",
     4: "<@{}> is on a 4 game win streak!",
     6: "Killing spree! <@{}> is on a 6 game win streak!",
     8: "RAMPAGE. <@{}> is on an 8 game win streak!",
@@ -24,7 +29,7 @@ WIN_STREAK_MESSAGES = {
     10: "U N S T O P P A B L E. <@{}> is on a 10 win streak!",
     15: "🎉 🎉 🎉 🎉 Congratulations! <@{}> has gone 15 games without losing a single one! 🎉 🎉 🎉 🎉"
 }
-
+SECONDS_IN_5_DAYS = 432000
 
 def fetch_win_streaks(member: str) -> Tuple[str, int]:
     db = create_db_connection()
@@ -38,7 +43,11 @@ def fetch_win_streaks(member: str) -> Tuple[str, int]:
         ladder_info = character.get("ladder_info", {})
         sorted_seasons = list(sorted(ladder_info.keys(), reverse=True))
         if sorted_seasons:
-            race_win_streaks = (x.get("current_win_streak", 0) for x in ladder_info[sorted_seasons[0]].values())
+            race_win_streaks = (
+                x.get("current_win_streak", 0)
+                for x
+                in ladder_info[sorted_seasons[0]].values()
+                if x.get("last_played_time_stamp", 0) > time.time() - SECONDS_IN_5_DAYS)
             return max(race_win_streaks, default=0)
         else:
             return 0
@@ -48,16 +57,14 @@ def fetch_win_streaks(member: str) -> Tuple[str, int]:
 
 
 def announce_win_streak(member: str, streak: int, previous_streak: int) -> None:
-    stream_data = fetch_stream_data(member)
-    if streak <= previous_streak or (streak < 4 and not stream_data) or streak < 3:
-        return
 
-    if streak in WIN_STREAK_MESSAGES:
+    if streak >= previous_streak and streak in WIN_STREAK_MESSAGES:
         data = {
             "channel_id": ANNOUNCEMENT_CHANNEL_ID,
             "message": WIN_STREAK_MESSAGES.get(streak).format(member)
         }
 
+        stream_data = fetch_stream_data(member)
         if stream_data.get("name", "") and stream_data.get("type", "") == "live":
             stream_name = stream_data["name"]
             data["message"] += "\nTune in to https://www.twitch.tv/{} and show your support!".format(stream_name)
@@ -96,6 +103,17 @@ def main():
     members = db.child("members").shallow().get().val()
     if not members:
         members = []
+
+    url = "https://discordapp.com/api/guilds/{}/members?limit=500".format(GUILD_ID)
+    response = requests.get(url, headers={'Authorization': 'Bot ' + DISCORD_BOT_TOKEN})
+    guild_members = response.json() if response.status_code == 200 else []
+    allin_members_lookup = set(
+        x.get("user", {}).get("id", "")
+        for x
+        in guild_members
+        if ALLIN_MEMBER_ROLE_ID in x.get("roles", []))
+
+    members = [x for x in members if x in allin_members_lookup]
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
         futures, _ = concurrent.futures.wait([executor.submit(fetch_win_streaks, member) for member in members])
