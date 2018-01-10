@@ -31,6 +31,7 @@ WIN_STREAK_MESSAGES = {
 }
 SECONDS_IN_5_DAYS = 432000
 
+
 def fetch_win_streaks(member: str) -> Tuple[str, int]:
     db = create_db_connection()
     regions = db.child("members").child(member).child("characters").get().val()
@@ -59,6 +60,8 @@ def fetch_win_streaks(member: str) -> Tuple[str, int]:
 def announce_win_streak(member: str, streak: int, previous_streak: int) -> None:
 
     if streak >= previous_streak and streak in WIN_STREAK_MESSAGES:
+        print("Announcing winstreak for member with id: " + member)
+
         data = {
             "channel_id": ANNOUNCEMENT_CHANNEL_ID,
             "message": WIN_STREAK_MESSAGES.get(streak).format(member)
