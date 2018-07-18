@@ -20,14 +20,30 @@ ALLIN_MEMBER_ROLE_ID = os.getenv("ALLIN_MEMBER_ROLE_ID", "")
 ANNOUNCE_URL = os.getenv("ANNOUNCE_URL", "http://localhost:40862")
 FIREBASE_CONFIG = os.getenv("FIREBASE_CONFIG", "")
 WIN_STREAKS_CACHE_FILE = os.getenv("WIN_STREAKS_CACHE_FILE", "win_streaks.cache")
+DEBUG = os.getenv("DEBUG", "false").casefold() == "true".casefold()
+
+if DEBUG:
+    def print_debug(msg):
+        print(msg)
+else:
+    def print_debug(unused):
+        pass
+
 
 WIN_STREAK_MESSAGES = {
-    4: "<@{}> is on a 4 game win streak!",
-    6: "Killing spree! <@{}> is on a 6 game win streak!",
-    8: "RAMPAGE. <@{}> is on an 8 game win streak!",
-    9: "<@{}> is completely dominating with a 9 win streak!",
-    10: "U N S T O P P A B L E. <@{}> is on a 10 win streak!",
-    15: "🎉 🎉 🎉 🎉 Congratulations!  🎉 🎉 🎉 🎉\n<@{}> has gone 15 games without losing a single one!"
+    4:
+    "{} is on a 4 game win streak!",
+    6:
+    "Killing spree! {} is on a 6 game win streak!",
+    8:
+    "RAMPAGE. {} is on an 8 game win streak!",
+    9:
+    "{} is completely dominating with a 9 win streak!",
+    10:
+    "U N S T O P P A B L E. {} is on a 10 win streak!",
+    15:
+    "🎉 🎉 🎉 🎉 Congratulations!  🎉 🎉 🎉 🎉\n"
+    "{} has gone 15 games without losing a single one!"
 }
 SECONDS_IN_5_DAYS = 432000
 
@@ -57,24 +73,30 @@ def fetch_win_streaks(member: str) -> Tuple[str, int]:
     return member, max(character_win_streaks, default=0)
 
 
-def announce_win_streak(member: str, streak: int, previous_streak: int) -> None:
+def announce_win_streak(member_id: str, member_name: str, streak: int,
+                        previous_streak: int) -> None:
 
     if streak > previous_streak and streak in WIN_STREAK_MESSAGES:
-        print("Announcing winstreak for member with id: " + member)
+        print_debug("Previous streak: {}, Streak: {}".format(
+            previous_streak, streak))
+        print_debug(
+            "Announcing winstreak for member: ({}, {})".format(
+                member_id, member_name))
 
         data = {
             "channel_id": ANNOUNCEMENT_CHANNEL_ID,
-            "message": WIN_STREAK_MESSAGES.get(streak).format(member)
+            "message": WIN_STREAK_MESSAGES.get(streak).format(member_name)
         }
 
-        stream_data = fetch_stream_data(member)
+        stream_data = fetch_stream_data(member_id)
         if stream_data.get("name", "") and stream_data.get("type", "") == "live":
             stream_name = stream_data["name"]
             data["message"] += "\nTune in to https://www.twitch.tv/{} and show your support!".format(stream_name)
         try:
             urllib.request.urlopen(ANNOUNCE_URL, data=json.dumps(data).encode("utf-8"))
         except urllib.request.URLError as e:
-            print("Error announcing member {} with streak {}".format(member, str(streak)))
+            print("Error announcing member ({}, {}) with streak {}".format(
+                member_id, member_name, str(streak)))
             print(e)
 
 
@@ -110,11 +132,11 @@ def main():
     url = "https://discordapp.com/api/guilds/{}/members?limit=500".format(GUILD_ID)
     response = requests.get(url, headers={'Authorization': 'Bot ' + DISCORD_BOT_TOKEN})
     guild_members = response.json() if response.status_code == 200 else []
-    allin_members_lookup = set(
-        x.get("user", {}).get("id", "")
-        for x
-        in guild_members
-        if ALLIN_MEMBER_ROLE_ID in x.get("roles", []))
+    allin_members_lookup = dict((x.get("user", {}).get("id", ""),
+                                 x.get("nick",
+                                       x.get("user", {}).get("username", "")))
+                                for x in guild_members
+                                if ALLIN_MEMBER_ROLE_ID in x.get("roles", []))
 
     members = [x for x in members if x in allin_members_lookup]
 
@@ -128,9 +150,11 @@ def main():
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
             concurrent.futures.wait([
-                executor.submit(announce_win_streak, member, streak, win_streaks_cache.get(member, 0))
-                for member, streak
-                in win_streaks])
+                executor.submit(announce_win_streak, member_id,
+                                allin_members_lookup[member_id], streak,
+                                win_streaks_cache.get(member_id, 0))
+                for member_id, streak in win_streaks
+            ])
 
     with open(WIN_STREAKS_CACHE_FILE, "wb") as file:
         pickle.dump(win_streaks, file)
