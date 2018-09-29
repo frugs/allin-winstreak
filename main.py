@@ -197,7 +197,7 @@ def main():
     try:
         while True:
             check_for_win_streaks_and_announce()
-            time.sleep(60)
+            time.sleep(300)
     except KeyboardInterrupt:
         pass
 
