@@ -1,25 +1,23 @@
-import base64
+import asyncio
 import concurrent.futures
-import gzip
 import itertools
 import json
 import os
-import pickle
-import requests
+import threading
+import time
 import urllib.request
 from typing import Tuple, List, Dict
 
 import pyrebase
-import time
+import requests
+import discord
 
 DISCORD_BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 GUILD_ID = os.getenv("GUILD_ID", "")
 TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID", "")
-ANNOUNCEMENT_CHANNEL_ID = os.getenv("ANNOUNCEMENT_CHANNEL_ID", "219804933916983296")
-ALLIN_MEMBER_ROLE_ID = os.getenv("ALLIN_MEMBER_ROLE_ID", "")
-ANNOUNCE_URL = os.getenv("ANNOUNCE_URL", "http://localhost:40862")
-FIREBASE_CONFIG = os.getenv("FIREBASE_CONFIG", "")
-WIN_STREAKS_CACHE_FILE = os.getenv("WIN_STREAKS_CACHE_FILE", "win_streaks.cache")
+ANNOUNCEMENT_CHANNEL_ID = int(os.getenv("ANNOUNCEMENT_CHANNEL_ID", "0"))
+MEMBER_ROLE_ID = os.getenv("MEMBER_ROLE_ID", "")
+FIREBASE_CONFIG = json.loads(os.getenv("FIREBASE_CONFIG", "{}"))
 DEBUG = os.getenv("DEBUG", "false").casefold() == "true".casefold()
 
 if DEBUG:
@@ -43,6 +41,8 @@ WIN_STREAK_MESSAGES = {
 }
 SECONDS_IN_5_DAYS = 432000
 WORKERS = 16
+
+previous_win_streaks = {}
 
 
 def fetch_win_streaks_for_member(member: str) -> Tuple[str, int]:
@@ -68,30 +68,45 @@ def fetch_win_streaks_for_member(member: str) -> Tuple[str, int]:
     return member, max(character_win_streaks, default=0)
 
 
-def announce_win_streak(member_id: str, member_name: str, streak: int,
-                        previous_streak: int) -> None:
+def send_discord_message(message: str):
+    def inner():
+        event_loop = asyncio.new_event_loop()
+        discord_client = discord.Client(loop=event_loop)
+
+        @discord_client.event
+        async def on_ready():
+            announcement_channel = discord_client.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+            await announcement_channel.send(message)
+            await discord_client.logout()
+
+        event_loop.run_until_complete(discord_client.start(DISCORD_BOT_TOKEN))
+        event_loop.close()
+
+    worker = threading.Thread(target=inner)
+    worker.start()
+    worker.join()
+
+
+def create_announcement_message_for_member(
+        member_id: str,
+        member_name: str,
+        streak: int,
+        previous_streak: int,
+) -> str:
 
     if streak > previous_streak and streak in WIN_STREAK_MESSAGES:
         print_debug("Previous streak: {}, Streak: {}".format(previous_streak, streak))
         print_debug("Announcing winstreak for member: ({}, {})".format(member_id, member_name))
 
-        data = {
-            "channel_id": ANNOUNCEMENT_CHANNEL_ID,
-            "message": WIN_STREAK_MESSAGES.get(streak).format(member_name)
-        }
+        message = WIN_STREAK_MESSAGES.get(streak).format(member_name)
 
         stream_data = fetch_stream_data(member_id)
         if stream_data.get("name", "") and stream_data.get("type", "") == "live":
             stream_name = stream_data["name"]
-            data[
-                "message"] += "\nTune in to https://www.twitch.tv/{} and show your support!".format(
-                    stream_name)
-        try:
-            urllib.request.urlopen(ANNOUNCE_URL, data=json.dumps(data).encode("utf-8"))
-        except urllib.request.URLError as e:
-            print("Error announcing member ({}, {}) with streak {}".format(
-                member_id, member_name, str(streak)))
-            print(e)
+            message += "\nTune in to https://www.twitch.tv/{} and show your support!".format(
+                stream_name)
+
+        return message
 
 
 def fetch_stream_data(member: str) -> dict:
@@ -133,12 +148,11 @@ def create_members_lookup() -> Dict[str, str]:
     return dict((x.get("user", {}).get("id", ""),
                  x.get("nick",
                        x.get("user", {}).get("username", ""))) for x in guild_members
-                if ALLIN_MEMBER_ROLE_ID in x.get("roles", []))
+                if MEMBER_ROLE_ID in x.get("roles", []))
 
 
 def create_db_connection():
-    db_config = pickle.loads(gzip.decompress(base64.b64decode(FIREBASE_CONFIG)))
-    db = pyrebase.initialize_app(db_config).database()
+    db = pyrebase.initialize_app(FIREBASE_CONFIG).database()
     return db
 
 
@@ -148,38 +162,44 @@ def fetch_registered_users() -> List[str]:
     return registered_users or []
 
 
-def load_previous_win_streaks() -> Dict[str, int]:
-    if os.path.exists(WIN_STREAKS_CACHE_FILE):
-        with open(WIN_STREAKS_CACHE_FILE, "rb") as file:
-            return dict(pickle.load(file))
-
-
-def save_win_streaks(win_streaks: List[Tuple[str, int]]):
-    with open(WIN_STREAKS_CACHE_FILE, "wb") as file:
-        pickle.dump(win_streaks, file)
-
-
-def announce_all_win_streaks(
-        members_lookup: Dict[str, str],
-        previous_win_streaks: Dict[str, int],
-        win_streaks: List[Tuple[str, int]],
-):
+def create_win_streak_announcement(members_lookup: Dict[str, str],
+                                   win_streaks: List[Tuple[str, int]]) -> str:
     with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as executor:
-        concurrent.futures.wait([
-            executor.submit(announce_win_streak, member_id, members_lookup[member_id], streak,
-                            previous_win_streaks.get(member_id, 0))
-            for member_id, streak in win_streaks
+        futures, _ = concurrent.futures.wait([
+            executor.submit(
+                create_announcement_message_for_member,
+                member_id,
+                members_lookup[member_id],
+                streak,
+                previous_win_streaks.get(member_id, 0),
+            ) for member_id, streak in win_streaks
         ])
+        return "\n".join(future.result() for future in futures if future.done() and future.result())
 
 
-def main():
+def check_for_win_streaks_and_announce():
+    global previous_win_streaks
+
     registered_users = fetch_registered_users()
     members_lookup = create_members_lookup()
     registered_members = [x for x in registered_users if x in members_lookup]
     win_streaks = fetch_all_win_streaks(registered_members)
-    previous_win_streaks = load_previous_win_streaks()
-    announce_all_win_streaks(members_lookup, previous_win_streaks, win_streaks)
-    save_win_streaks(win_streaks)
+
+    # Don't announce win streaks if we haven't fetched them at least once
+    if previous_win_streaks:
+        announcement_message = create_win_streak_announcement(members_lookup, win_streaks)
+        send_discord_message(announcement_message)
+
+    previous_win_streaks = dict(win_streaks)
+
+
+def main():
+    try:
+        while True:
+            check_for_win_streaks_and_announce()
+            time.sleep(60)
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":
