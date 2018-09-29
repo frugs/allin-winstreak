@@ -147,10 +147,11 @@ def create_members_lookup() -> Dict[str, str]:
     url = "https://discordapp.com/api/guilds/{}/members?limit=500".format(GUILD_ID)
     response = requests.get(url, headers={'Authorization': 'Bot ' + DISCORD_BOT_TOKEN})
     guild_members = response.json() if response.status_code == 200 else []
-    return dict((x.get("user", {}).get("id", ""),
-                 x.get("nick",
-                       x.get("user", {}).get("username", ""))) for x in guild_members
-                if MEMBER_ROLE_ID in x.get("roles", []))
+    return dict((
+        x.get("user", {}).get("id", ""),
+        x.get("nick", "") or x.get("user", {}).get("username", "")
+        or x.get("user", {}).get("id", ""),
+    ) for x in guild_members if MEMBER_ROLE_ID in x.get("roles", []))
 
 
 def create_db_connection():
