@@ -2,3 +2,4 @@ requests>=2.19.1
 flask
 pyrebase
 git+https://github.com/Rapptz/discord.py@rewrite#egg=discord.py
+google-cloud-datastore
