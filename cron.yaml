@@ -1,0 +1,4 @@
+cron:
+- description: "announce win streaks"
+  url: /update
+  schedule: every 5 mins

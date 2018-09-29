@@ -11,24 +11,29 @@ from typing import Tuple, List, Dict
 import pyrebase
 import requests
 import discord
+import flask
 
-DISCORD_BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-GUILD_ID = os.getenv("GUILD_ID", "")
-TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID", "")
-ANNOUNCEMENT_CHANNEL_ID = int(os.getenv("ANNOUNCEMENT_CHANNEL_ID", "0"))
-MEMBER_ROLE_ID = os.getenv("MEMBER_ROLE_ID", "")
-FIREBASE_CONFIG = json.loads(os.getenv("FIREBASE_CONFIG", "{}"))
-DEBUG = os.getenv("DEBUG", "false").casefold() == "true".casefold()
+if os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "") or os.getenv("GAE_INSTANCE", ""):
+    from google.cloud import datastore
 
-if DEBUG:
+    def retrieve_config_value(key: str) -> str:
+        datastore_client = datastore.Client()
+        return datastore_client.get(datastore_client.key("Config", key))["value"]
 
-    def print_debug(msg):
-        print(msg)
+    DISCORD_BOT_TOKEN = retrieve_config_value("discordBotToken")
+    GUILD_ID = retrieve_config_value("discordGuildId")
+    TWITCH_CLIENT_ID = retrieve_config_value("twitchClientId")
+    ANNOUNCEMENT_CHANNEL_ID = int(retrieve_config_value("discordAnnouncementChannelId"))
+    MEMBER_ROLE_ID = retrieve_config_value("discordMemberRoleId")
+    FIREBASE_CONFIG = json.loads(retrieve_config_value("firebaseConfig"))
+
 else:
-
-    def print_debug(_):
-        pass
-
+    DISCORD_BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+    GUILD_ID = os.getenv("GUILD_ID", "")
+    TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID", "")
+    ANNOUNCEMENT_CHANNEL_ID = int(os.getenv("ANNOUNCEMENT_CHANNEL_ID", "0"))
+    MEMBER_ROLE_ID = os.getenv("MEMBER_ROLE_ID", "")
+    FIREBASE_CONFIG = json.loads(os.getenv("FIREBASE_CONFIG", "{}"))
 
 WIN_STREAK_MESSAGES = {
     4: "{} is on a 4 game win streak!",
@@ -95,9 +100,6 @@ def create_announcement_message_for_member(
 ) -> str:
 
     if streak > previous_streak and streak in WIN_STREAK_MESSAGES:
-        print_debug("Previous streak: {}, Streak: {}".format(previous_streak, streak))
-        print_debug("Announcing winstreak for member: ({}, {})".format(member_id, member_name))
-
         message = WIN_STREAK_MESSAGES.get(streak).format(member_name)
 
         stream_data = fetch_stream_data(member_id)
@@ -193,13 +195,18 @@ def check_for_win_streaks_and_announce():
     previous_win_streaks = dict(win_streaks)
 
 
+app = flask.Flask(__name__)
+
+
+@app.route("/update")
+def update():
+    if flask.request.headers.get("X-Appengine-Cron", "false") == "true":
+        check_for_win_streaks_and_announce()
+    return "", 200
+
+
 def main():
-    try:
-        while True:
-            check_for_win_streaks_and_announce()
-            time.sleep(300)
-    except KeyboardInterrupt:
-        pass
+    app.run(host="localhost", port=21726, debug=True)
 
 
 if __name__ == "__main__":
