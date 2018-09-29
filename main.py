@@ -7,7 +7,7 @@ import os
 import pickle
 import requests
 import urllib.request
-from typing import Tuple
+from typing import Tuple, List, Dict
 
 import pyrebase
 import time
@@ -23,9 +23,11 @@ WIN_STREAKS_CACHE_FILE = os.getenv("WIN_STREAKS_CACHE_FILE", "win_streaks.cache"
 DEBUG = os.getenv("DEBUG", "false").casefold() == "true".casefold()
 
 if DEBUG:
+
     def print_debug(msg):
         print(msg)
 else:
+
     def print_debug(_):
         pass
 
@@ -40,9 +42,10 @@ WIN_STREAK_MESSAGES = {
         "{} has gone 15 games without losing a single one!",
 }
 SECONDS_IN_5_DAYS = 432000
+WORKERS = 16
 
 
-def fetch_win_streaks(member: str) -> Tuple[str, int]:
+def fetch_win_streaks_for_member(member: str) -> Tuple[str, int]:
     db = create_db_connection()
     regions = db.child("members").child(member).child("characters").get().val()
     if not regions:
@@ -116,47 +119,67 @@ def fetch_stream_data(member: str) -> dict:
     return {}
 
 
-def main():
-    db = create_db_connection()
-    members = db.child("members").shallow().get().val()
-    if not members:
-        members = []
+def fetch_all_win_streaks(members: List[str]) -> List[Tuple[str, int]]:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as executor:
+        futures, _ = concurrent.futures.wait(
+            [executor.submit(fetch_win_streaks_for_member, member) for member in members])
+        return [future.result() for future in futures if future.done()]
 
+
+def create_members_lookup() -> Dict[str, str]:
     url = "https://discordapp.com/api/guilds/{}/members?limit=500".format(GUILD_ID)
     response = requests.get(url, headers={'Authorization': 'Bot ' + DISCORD_BOT_TOKEN})
     guild_members = response.json() if response.status_code == 200 else []
-    allin_members_lookup = dict((x.get("user", {}).get("id", ""),
-                                 x.get("nick",
-                                       x.get("user", {}).get("username", "")))
-                                for x in guild_members
-                                if ALLIN_MEMBER_ROLE_ID in x.get("roles", []))
-
-    members = [x for x in members if x in allin_members_lookup]
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
-        futures, _ = concurrent.futures.wait(
-            [executor.submit(fetch_win_streaks, member) for member in members])
-        win_streaks = [future.result() for future in futures if future.done()]
-
-    if os.path.exists(WIN_STREAKS_CACHE_FILE):
-        with open(WIN_STREAKS_CACHE_FILE, "rb") as file:
-            win_streaks_cache = dict(pickle.load(file))
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
-            concurrent.futures.wait([
-                executor.submit(announce_win_streak, member_id, allin_members_lookup[member_id],
-                                streak, win_streaks_cache.get(member_id, 0))
-                for member_id, streak in win_streaks
-            ])
-
-    with open(WIN_STREAKS_CACHE_FILE, "wb") as file:
-        pickle.dump(win_streaks, file)
+    return dict((x.get("user", {}).get("id", ""),
+                 x.get("nick",
+                       x.get("user", {}).get("username", ""))) for x in guild_members
+                if ALLIN_MEMBER_ROLE_ID in x.get("roles", []))
 
 
 def create_db_connection():
     db_config = pickle.loads(gzip.decompress(base64.b64decode(FIREBASE_CONFIG)))
     db = pyrebase.initialize_app(db_config).database()
     return db
+
+
+def fetch_registered_users() -> List[str]:
+    db = create_db_connection()
+    registered_users = db.child("members").shallow().get().val()
+    return registered_users or []
+
+
+def load_previous_win_streaks() -> Dict[str, int]:
+    if os.path.exists(WIN_STREAKS_CACHE_FILE):
+        with open(WIN_STREAKS_CACHE_FILE, "rb") as file:
+            return dict(pickle.load(file))
+
+
+def save_win_streaks(win_streaks: List[Tuple[str, int]]):
+    with open(WIN_STREAKS_CACHE_FILE, "wb") as file:
+        pickle.dump(win_streaks, file)
+
+
+def announce_all_win_streaks(
+        members_lookup: Dict[str, str],
+        previous_win_streaks: Dict[str, int],
+        win_streaks: List[Tuple[str, int]],
+):
+    with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as executor:
+        concurrent.futures.wait([
+            executor.submit(announce_win_streak, member_id, members_lookup[member_id], streak,
+                            previous_win_streaks.get(member_id, 0))
+            for member_id, streak in win_streaks
+        ])
+
+
+def main():
+    registered_users = fetch_registered_users()
+    members_lookup = create_members_lookup()
+    registered_members = [x for x in registered_users if x in members_lookup]
+    win_streaks = fetch_all_win_streaks(registered_members)
+    previous_win_streaks = load_previous_win_streaks()
+    announce_all_win_streaks(members_lookup, previous_win_streaks, win_streaks)
+    save_win_streaks(win_streaks)
 
 
 if __name__ == "__main__":
