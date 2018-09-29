@@ -1,4 +1,5 @@
 runtime: python37
+service: winstreak
 
 handlers:
 - url: /.*
