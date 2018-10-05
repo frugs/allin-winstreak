@@ -74,6 +74,9 @@ def fetch_win_streaks_for_member(member: str) -> Tuple[str, int]:
 
 
 def send_discord_message(message: str):
+    if not message:
+        return
+
     def inner():
         event_loop = asyncio.new_event_loop()
         discord_client = discord.Client(loop=event_loop)
@@ -197,13 +200,17 @@ def check_for_win_streaks_and_announce():
 
 
 app = flask.Flask(__name__)
+request_handler_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
 
 @app.route("/update")
 def update():
     if flask.request.headers.get("X-Appengine-Cron", "false") == "true":
-        check_for_win_streaks_and_announce()
-    return "", 200
+        future = request_handler_executor.submit(check_for_win_streaks_and_announce)
+        future.result(timeout=300)
+        return "", 200
+    else:
+        return "Forbidden", 403
 
 
 def main():
